@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import boto3
 from botocore.client import Config
+from botocore.exceptions import ClientError
 
 S3_BUCKET = os.environ["S3_BUCKET"]
 AWS_REGION = os.environ.get("AWS_REGION", "ap-southeast-2")
@@ -13,41 +14,65 @@ app = FastAPI(title="Rookie Worker")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 def presign_get(key: str, expires=3600):
-  return s3.generate_presigned_url("get_object", Params={"Bucket": S3_BUCKET, "Key": key}, ExpiresIn=expires)
+    return s3.generate_presigned_url("get_object", Params={"Bucket": S3_BUCKET, "Key": key}, ExpiresIn=expires)
 
-def run_ffmpeg_dummy(in_path: str, out_path: str):
-  # This is just a test processor – we’ll replace it later
-  subprocess.run([
-    "ffmpeg","-y","-i",in_path,"-t","5",
-    "-c:v","libx264","-c:a","aac","-movflags","+faststart",out_path
-  ], check=True)
+def run_ffmpeg_fast(in_path: str, out_path: str):
+    # Very fast: trim to 3 seconds without re-encoding (avoids timeouts)
+    subprocess.run([
+        "ffmpeg","-y",
+        "-ss","0","-i",in_path,
+        "-t","3",
+        "-c","copy",
+        out_path
+    ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 @app.get("/health")
 def health():
-  return {"ok": True}
+    return {"ok": True}
+
+@app.get("/debug/exists")
+def debug_exists(s3_key: str):
+    try:
+        s3.head_object(Bucket=S3_BUCKET, Key=s3_key)
+        return {"exists": True}
+    except ClientError as e:
+        return {"exists": False, "error": str(e)}
 
 @app.post("/process")
 def process_job(payload: dict):
-  s3_key = payload["s3_key"]
-  out_prefix = payload.get("out_prefix", "results/demo/")
+    try:
+        s3_key = payload["s3_key"]
+        out_prefix = payload.get("out_prefix", "results/demo/")
 
-  with tempfile.TemporaryDirectory() as td:
-    in_path = os.path.join(td, "input.mp4")
-    outdir = os.path.join(td, "out"); os.makedirs(outdir, exist_ok=True)
+        with tempfile.TemporaryDirectory() as td:
+            in_path = os.path.join(td, "input.mp4")
+            outdir = os.path.join(td, "out"); os.makedirs(outdir, exist_ok=True)
 
-    # 1) Download video from S3
-    s3.download_file(S3_BUCKET, s3_key, in_path)
+            # 1) Download from S3 (will throw if key is wrong)
+            s3.download_file(S3_BUCKET, s3_key, in_path)
 
-    # 2) Process
-    out_mp4 = os.path.join(outdir, "highlights.mp4")
-    run_ffmpeg_dummy(in_path, out_mp4)
+            # 2) Process very fast (3s copy)
+            out_mp4 = os.path.join(outdir, "highlights.mp4")
+            run_ffmpeg_fast(in_path, out_mp4)
 
-    # 3) Upload results back to S3
-    artifacts = []
-    for name in os.listdir(outdir):
-      loc = os.path.join(outdir, name)
-      key = f"{out_prefix}{name}"
-      s3.upload_file(loc, S3_BUCKET, key, ExtraArgs={"ContentType": "video/mp4"})
-      artifacts.append({"name": name, "key": key, "url": presign_get(key)})
+            # 3) Upload results
+            artifacts = []
+            for name in os.listdir(outdir):
+                loc = os.path.join(outdir, name)
+                key = f"{out_prefix}{name}"
+                s3.upload_file(
+                    loc, S3_BUCKET, key,
+                    ExtraArgs={"ContentType": "video/mp4" if name.endswith(".mp4") else "application/octet-stream"}
+                )
+                artifacts.append({"name": name, "key": key, "url": presign_get(key)})
 
-    return {"status": "done", "artifacts": artifacts}
+            return {"status": "done", "artifacts": artifacts}
+
+    except ClientError as e:
+        return {"status": "error", "where": "s3", "message": str(e)}
+    except FileNotFoundError as e:
+        return {"status": "error", "where": "ffmpeg_or_path", "message": str(e)}
+    except subprocess.CalledProcessError as e:
+        return {"status": "error", "where": "ffmpeg", "message": e.stderr.decode("utf-8", errors="ignore")}
+    except Exception as e:
+        return {"status": "error", "where": "unknown", "message": str(e)}
