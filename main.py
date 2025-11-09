@@ -1,5 +1,6 @@
 import os, tempfile, subprocess
 import logging
+logging.basicConfig(level=logging.INFO)
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import boto3
@@ -114,3 +115,4 @@ def process_job(payload: dict):
         }
     except Exception as e:
         return {"status": "error", "where": "unknown", "message": str(e)}
+
