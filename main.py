@@ -1,5 +1,5 @@
 import os, tempfile, subprocess
-import logging                                   # ⭐ ADDED
+import logging                                 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import boto3
@@ -14,9 +14,6 @@ AWS_REGION = os.environ.get("AWS_REGION", "ap-southeast-2")
 
 s3 = boto3.client("s3", region_name=AWS_REGION, config=Config(signature_version="s3v4"))
 
-# -----------------------------------------------------------------------------------
-# ⭐ ADDED: log the AWS identity once at startup (proves which IAM user/role Render uses)
-# -----------------------------------------------------------------------------------
 def log_aws_identity():
     try:
         sts = boto3.client("sts", region_name=AWS_REGION)
@@ -124,3 +121,4 @@ def process_job(payload: dict):
         return {"status": "error", "where": "ffmpeg", "message": e.stderr.decode("utf-8", errors="ignore")}
     except Exception as e:
         return {"status": "error", "where": "unknown", "message": str(e)}
+
