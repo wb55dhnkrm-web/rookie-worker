@@ -1,14 +1,11 @@
 import os, tempfile, subprocess
-import logging                                 
+import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import boto3
 from botocore.client import Config
 from botocore.exceptions import ClientError
 
-# -----------------------------------------------------------------------------------
-# Environment
-# -----------------------------------------------------------------------------------
 S3_BUCKET = os.environ["S3_BUCKET"]
 AWS_REGION = os.environ.get("AWS_REGION", "ap-southeast-2")
 
@@ -18,23 +15,18 @@ def log_aws_identity():
     try:
         sts = boto3.client("sts", region_name=AWS_REGION)
         ident = sts.get_caller_identity()
-        logging.info(f"🟢 AWS Identity: {ident}")       # shows Account + Arn in Render logs
+        logging.info(f"🟢 AWS Identity: {ident}")
     except Exception as e:
         logging.exception("❌ STS identity check failed")
 
-log_aws_identity()  # run once at import time
+log_aws_identity()
 
-# -----------------------------------------------------------------------------------
-# App
-# -----------------------------------------------------------------------------------
 app = FastAPI(title="Rookie Worker")
-
-# (optional) You can restrict CORS to your Vercel domain(s) instead of "*"
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # e.g. ["https://your-vercel-domain.vercel.app"]
+    allow_origins=["*"],
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*"]
 )
 
 def presign_get(key: str, expires=3600):
@@ -45,7 +37,6 @@ def presign_get(key: str, expires=3600):
     )
 
 def run_ffmpeg_fast(in_path: str, out_path: str):
-    # Very fast: trim to 3 seconds without re-encoding (avoids timeouts)
     subprocess.run(
         [
             "ffmpeg", "-y",
@@ -63,7 +54,6 @@ def run_ffmpeg_fast(in_path: str, out_path: str):
 def health():
     return {"ok": True}
 
-# ⭐ ADDED: quick endpoint to confirm credentials at runtime if needed
 @app.get("/debug/identity")
 def debug_identity():
     try:
@@ -91,14 +81,11 @@ def process_job(payload: dict):
             outdir = os.path.join(td, "out")
             os.makedirs(outdir, exist_ok=True)
 
-            # 1) Download from S3 (will throw if key is wrong / permissions missing)
             s3.download_file(S3_BUCKET, s3_key, in_path)
 
-            # 2) Process very fast (3s copy)
             out_mp4 = os.path.join(outdir, "highlights.mp4")
             run_ffmpeg_fast(in_path, out_mp4)
 
-            # 3) Upload results
             artifacts = []
             for name in os.listdir(outdir):
                 loc = os.path.join(outdir, name)
@@ -106,8 +93,10 @@ def process_job(payload: dict):
                 s3.upload_file(
                     loc, S3_BUCKET, key,
                     ExtraArgs={
-                        "ContentType": "video/mp4" if name.endswith(".mp4") else "application/octet-stream"
-                    }
+                        "ContentType": "video/mp4"
+                        if name.endswith(".mp4")
+                        else "application/octet-stream"
+                    },
                 )
                 artifacts.append({"name": name, "key": key, "url": presign_get(key)})
 
@@ -118,7 +107,10 @@ def process_job(payload: dict):
     except FileNotFoundError as e:
         return {"status": "error", "where": "ffmpeg_or_path", "message": str(e)}
     except subprocess.CalledProcessError as e:
-        return {"status": "error", "where": "ffmpeg", "message": e.stderr.decode("utf-8", errors="ignore")}
+        return {
+            "status": "error",
+            "where": "ffmpeg",
+            "message": e.stderr.decode("utf-8", errors="ignore"),
+        }
     except Exception as e:
         return {"status": "error", "where": "unknown", "message": str(e)}
-
